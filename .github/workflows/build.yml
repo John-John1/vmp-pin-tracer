@@ -1,0 +1,53 @@
+name: Build VMP Tracer Pintool
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup MSVC x86
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x86
+
+    - name: Download Pin 4.0
+      shell: pwsh
+      run: |
+        Invoke-WebRequest -Uri "https://software.intel.com/sites/landingpage/pintool/downloads/pin-external-4.0-99633-g5ca9893f2-clang-windows.zip" -OutFile pin.zip
+        Expand-Archive -Path pin.zip -DestinationPath .
+        Rename-Item "pin-external-4.0-99633-g5ca9893f2-clang-windows" "pin"
+
+    - name: Copy source to Pin tools directory
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path "pin/source/tools/VMPTracer" -Force
+        Copy-Item "vmp_tracer.cpp" -Destination "pin/source/tools/VMPTracer/"
+        Copy-Item "makefile.rules" -Destination "pin/source/tools/VMPTracer/"
+        Set-Content -Path "pin/source/tools/VMPTracer/makefile" -Value @'
+        PIN_ROOT = ../../../..
+        TOOL_ROOTS := vmp_tracer
+        include $(PIN_ROOT)/source/tools/Config/makefile.config
+        include makefile.rules
+        include $(TOOLS_ROOT)/Config/makefile.default.rules
+        '@
+
+    - name: Build Pintool (ia32)
+      shell: cmd
+      run: |
+        cd pin\source\tools\VMPTracer
+        nmake /f makefile PIN_ROOT=..\..\..\.. TARGET=ia32
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: vmp-tracer-ia32
+        path: |
+          pin/source/tools/VMPTracer/obj-ia32/vmp_tracer.dll
+          pin/source/tools/VMPTracer/obj-ia32/vmp_tracer.pdb
