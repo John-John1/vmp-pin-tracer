@@ -1,0 +1,55 @@
+name: Build VMP Tracer Pintool
+on:
+  push:
+    branches: [ master ]
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+    - uses: actions/checkout@v4
+    - name: Setup MSVC x86
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x86
+    - name: Setup MSYS2
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW32
+        install: make
+    - name: Download Pin
+      shell: pwsh
+      run: |
+        gh release download v1.0 --repo John-John1/vmp-pin-tracer --pattern pin.zip
+        Expand-Archive -Path pin.zip -DestinationPath .
+        Rename-Item "pin-external-4.0-99633-g5ca9893f2-clang-windows" "pin"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Copy source
+      shell: pwsh
+      run: |
+        New-Item -ItemType Directory -Path "pin/source/tools/VMPTracer" -Force
+        Copy-Item "vmp_tracer.cpp" -Destination "pin/source/tools/VMPTracer/"
+        Copy-Item "makefile.rules" -Destination "pin/source/tools/VMPTracer/"
+    - name: Create makefile
+      shell: msys2 {0}
+      run: |
+        cat > pin/source/tools/VMPTracer/makefile << 'MKEOF'
+PIN_ROOT = ../../..
+CONFIG_ROOT = $(PIN_ROOT)/source/tools/Config
+TOOL_ROOTS := vmp_tracer
+include $(CONFIG_ROOT)/makefile.config
+include makefile.rules
+include $(TOOLS_ROOT)/Config/makefile.default.rules
+MKEOF
+    - name: Build
+      shell: msys2 {0}
+      run: |
+        export PATH="/c/Program Files/LLVM/bin:$PATH"
+        cd pin/source/tools/VMPTracer
+        make -f makefile PIN_ROOT=../../.. TARGET=ia32 2>&1
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: vmp-tracer-ia32
+        path: pin/source/tools/VMPTracer/obj-ia32/*.dll
