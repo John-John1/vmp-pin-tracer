@@ -3,40 +3,46 @@
 
 FILE* trace;
 PIN_LOCK traceLock;
-UINT64 totalInsns = 0;
+UINT64 totalCalls = 0;
 
-// Record all instructions in handler region 0x4600000-0x4700000
-VOID RecordInsn(VOID* ip, CONTEXT* ctx)
+// Dispatch loop range
+#define DISPATCH_START 0x4684500
+#define DISPATCH_END   0x4684700
+
+// Record when execution leaves dispatch loop (handler call)
+VOID RecordHandler(VOID* target, VOID* from)
 {
     PIN_GetLock(&traceLock, 1);
-    totalInsns++;
-    fprintf(trace, "%x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x esp=%x ebp=%x\n",
-            (UINT32)(ADDRINT)ip,
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESP),
-            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBP));
+    totalCalls++;
+    fprintf(trace, "call %x from %x\n", (UINT32)(ADDRINT)target, (UINT32)(ADDRINT)from);
     PIN_ReleaseLock(&traceLock);
 }
 
 VOID Instruction(INS ins, VOID* v)
 {
     ADDRINT addr = INS_Address(ins);
-    // Trace handler region 0x4600000-0x4700000
-    if (addr >= 0x4600000 && addr < 0x4700000) {
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordInsn, IARG_INST_PTR, IARG_CONTEXT, IARG_END);
+    
+    // If this instruction is at the end of dispatch loop range,
+    // and it's a jump/call, record the target
+    if (addr >= DISPATCH_START && addr < DISPATCH_END) {
+        // Check if this is a jump or call instruction
+        if (INS_IsBranchOrCall(ins)) {
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordHandler,
+                IARG_BRANCH_TARGET_ADDR,
+                IARG_INST_PTR,
+                IARG_END);
+        }
     }
 }
 
-VOID Fini(INT32 code, VOID* v) { fprintf(trace, "#eof %llu\n", totalInsns); fclose(trace); }
+VOID Fini(INT32 code, VOID* v) { 
+    fprintf(trace, "#eof total_calls=%llu\n", totalCalls); 
+    fclose(trace); 
+}
 
 int main(int argc, char* argv[])
 {
-    trace = fopen("vmp_handler_trace.out", "w");
+    trace = fopen("vmp_dispatch.out", "w");
     if (!trace) return 1;
     PIN_InitLock(&traceLock);
     if (PIN_Init(argc, argv)) return -1;
