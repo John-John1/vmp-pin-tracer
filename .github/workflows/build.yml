@@ -32,16 +32,10 @@ jobs:
         Copy-Item "vmp_tracer.cpp" -Destination "pin/source/tools/VMPTracer/"
         Copy-Item "makefile.rules" -Destination "pin/source/tools/VMPTracer/"
     - name: Create makefile
-      shell: msys2 {0}
+      shell: pwsh
       run: |
-        cat > pin/source/tools/VMPTracer/makefile << 'MKEOF'
-PIN_ROOT = ../../..
-CONFIG_ROOT = $(PIN_ROOT)/source/tools/Config
-TOOL_ROOTS := vmp_tracer
-include $(CONFIG_ROOT)/makefile.config
-include makefile.rules
-include $(TOOLS_ROOT)/Config/makefile.default.rules
-MKEOF
+        $mf = "PIN_ROOT = ../../..`nCONFIG_ROOT = `$`(PIN_ROOT)/source/tools/Config`n`nTOOL_ROOTS := vmp_tracer`n`ninclude `$`(CONFIG_ROOT)/makefile.config`ninclude makefile.rules`ninclude `$`(TOOLS_ROOT)/Config/makefile.default.rules`n"
+        Set-Content -Path "pin/source/tools/VMPTracer/makefile" -Value $mf
     - name: Build
       shell: msys2 {0}
       run: |
