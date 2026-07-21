@@ -14,26 +14,25 @@ static UINT32 handlerAddrs[] = {
 };
 #define NUM_HANDLERS (sizeof(handlerAddrs)/sizeof(handlerAddrs[0]))
 
-VOID DumpBytecode(VOID* ip)
+VOID DumpCode(VOID* ip)
 {
     if (dumped) return;
     dumped = TRUE;
     
     PIN_GetLock(&traceLock, 1);
     
-    // Bytecode region
-    UINT32 bc_start = 0x048183df;
-    UINT32 bc_end = 0x0483b8e3;
-    UINT32 size = bc_end - bc_start;
+    // Dump large code region: 0x4660000 - 0x46B0000 (covers handlers + dispatch)
+    UINT32 code_start = 0x4660000;
+    UINT32 code_end = 0x46B0000;
+    UINT32 size = code_end - code_start;
     
-    fprintf(trace, "BYTECODE %x %x\n", bc_start, bc_end);
+    fprintf(trace, "CODE %x %x\n", code_start, code_end);
     
-    // Dump in hex
     for (UINT32 offset = 0; offset < size; offset += 16) {
-        fprintf(trace, "%08x: ", bc_start + offset);
+        fprintf(trace, "%08x: ", code_start + offset);
         for (UINT32 i = 0; i < 16 && (offset + i) < size; i++) {
             UINT8 byte;
-            if (PIN_SafeCopy(&byte, (void*)(bc_start + offset + i), 1) == 1) {
+            if (PIN_SafeCopy(&byte, (void*)(code_start + offset + i), 1) == 1) {
                 fprintf(trace, "%02x ", byte);
             } else {
                 fprintf(trace, "?? ");
@@ -51,10 +50,9 @@ VOID Instruction(INS ins, VOID* v)
     ADDRINT addr = INS_Address(ins);
     UINT32 a = (UINT32)addr;
     
-    // Trigger dump when any handler is executed
     for (int i = 0; i < NUM_HANDLERS; i++) {
         if (a == handlerAddrs[i]) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)DumpBytecode, IARG_INST_PTR, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)DumpCode, IARG_INST_PTR, IARG_END);
             return;
         }
     }
@@ -64,7 +62,7 @@ VOID Fini(INT32 code, VOID* v) { fclose(trace); }
 
 int main(int argc, char* argv[])
 {
-    trace = fopen("vmp_bytecode.bin", "w");
+    trace = fopen("vmp_code.bin", "w");
     if (!trace) return 1;
     PIN_InitLock(&traceLock);
     if (PIN_Init(argc, argv)) return -1;
