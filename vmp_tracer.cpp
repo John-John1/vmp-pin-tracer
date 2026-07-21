@@ -3,45 +3,38 @@
 
 FILE* trace;
 PIN_LOCK traceLock;
-BOOL dumped = FALSE;
+UINT64 totalHits = 0;
 
-// Handler addresses to trigger dump
-static UINT32 handlerAddrs[] = {
-    0x466f330, 0x46828cb, 0x468e838, 0x467b3f8, 0x4678829, 0x46822e2,
-    0x469479b, 0x468f10b, 0x46a2aed, 0x466d0d2, 0x46a5502, 0x469b3ec,
-    0x4672be7, 0x46a137e, 0x468875e, 0x46701f3, 0x468edf8, 0x466e344,
-    0x46a4324, 0x468c835, 0x46a010f, 0x468d492, 0x46830b0, 0x46801fe,
+// Dispatch loop addresses (key instructions)
+static UINT32 dispatchAddrs[] = {
+    0x46845ab,  // add eax, 0x4350ab0 (start of dispatch)
+    0x46845ba,  // ret (jump to handler)
+    0x46845fb,  // mov [edi+eax], ecx (write to table)
+    0x4684603,  // mov eax, [esi] (read bytecode)
+    0x468460f,  // ror eax, 0x17 (decrypt)
+    0x468461d,  // sub ebx, eax (modify EBX)
+    0x4684622,  // lea eax, [eax+0x204774de] (compute next handler)
+    0x468462c,  // jmp 0x46845ab (loop)
 };
-#define NUM_HANDLERS (sizeof(handlerAddrs)/sizeof(handlerAddrs[0]))
+#define NUM_DISPATCH (sizeof(dispatchAddrs)/sizeof(dispatchAddrs[0]))
 
-VOID DumpCode(VOID* ip)
+VOID RecordDispatch(VOID* ip, CONTEXT* ctx)
 {
-    if (dumped) return;
-    dumped = TRUE;
-    
     PIN_GetLock(&traceLock, 1);
+    totalHits++;
     
-    // Dump large code region: 0x4660000 - 0x46B0000 (covers handlers + dispatch)
-    UINT32 code_start = 0x4660000;
-    UINT32 code_end = 0x46B0000;
-    UINT32 size = code_end - code_start;
+    UINT32 rip = (UINT32)(ADDRINT)ip;
+    fprintf(trace, "%x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x esp=%x ebp=%x\n",
+            rip,
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESP),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBP));
     
-    fprintf(trace, "CODE %x %x\n", code_start, code_end);
-    
-    for (UINT32 offset = 0; offset < size; offset += 16) {
-        fprintf(trace, "%08x: ", code_start + offset);
-        for (UINT32 i = 0; i < 16 && (offset + i) < size; i++) {
-            UINT8 byte;
-            if (PIN_SafeCopy(&byte, (void*)(code_start + offset + i), 1) == 1) {
-                fprintf(trace, "%02x ", byte);
-            } else {
-                fprintf(trace, "?? ");
-            }
-        }
-        fprintf(trace, "\n");
-    }
-    
-    fprintf(trace, "END\n");
     PIN_ReleaseLock(&traceLock);
 }
 
@@ -50,19 +43,22 @@ VOID Instruction(INS ins, VOID* v)
     ADDRINT addr = INS_Address(ins);
     UINT32 a = (UINT32)addr;
     
-    for (int i = 0; i < NUM_HANDLERS; i++) {
-        if (a == handlerAddrs[i]) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)DumpCode, IARG_INST_PTR, IARG_END);
+    for (int i = 0; i < NUM_DISPATCH; i++) {
+        if (a == dispatchAddrs[i]) {
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordDispatch, IARG_INST_PTR, IARG_CONTEXT, IARG_END);
             return;
         }
     }
 }
 
-VOID Fini(INT32 code, VOID* v) { fclose(trace); }
+VOID Fini(INT32 code, VOID* v) { 
+    fprintf(trace, "#eof total=%llu\n", totalHits); 
+    fclose(trace); 
+}
 
 int main(int argc, char* argv[])
 {
-    trace = fopen("vmp_code.bin", "w");
+    trace = fopen("vmp_dispatch_trace.out", "w");
     if (!trace) return 1;
     PIN_InitLock(&traceLock);
     if (PIN_Init(argc, argv)) return -1;
