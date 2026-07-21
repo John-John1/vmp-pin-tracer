@@ -5,6 +5,11 @@ FILE* trace;
 PIN_LOCK traceLock;
 UINT64 totalInsns = 0;
 
+// Known handler addresses - will be populated dynamically
+// For now, capture ALL addresses in a small range around known handlers
+#define HANDLER_B 0x466e44c
+#define HANDLER_G 0x46a147c
+
 VOID RecordInsn(VOID* ip, CONTEXT* ctx)
 {
     PIN_GetLock(&traceLock, 1);
@@ -25,8 +30,8 @@ VOID RecordInsn(VOID* ip, CONTEXT* ctx)
 VOID Instruction(INS ins, VOID* v)
 {
     ADDRINT addr = INS_Address(ins);
-    // Only trace handler region 0x4600000 - 0x4700000
-    if (addr >= 0x4600000 && addr < 0x4700000) {
+    // Only trace specific handler addresses
+    if (addr == HANDLER_B || addr == HANDLER_G) {
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordInsn, IARG_INST_PTR, IARG_CONTEXT, IARG_END);
     }
 }
