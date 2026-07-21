@@ -1,13 +1,17 @@
+/*
+ * VMP 3.6 VM Context + Dispatch + Handler Capture
+ * Tracks: handler entries, dispatch step3 (s2_eax), EDI memory dumps
+ */
 #include "pin.H"
 #include <stdio.h>
 
 FILE* trace;
 PIN_LOCK traceLock;
 UINT64 totalHits = 0;
-UINT64 maxHits = 100000;
-BOOL contextDumped = FALSE;
+UINT64 maxHits = 50000;
+ADDRINT lastEdi = 0;
 
-// Handler addresses to trigger context dump and trace
+// Handler addresses (54 known)
 static UINT32 handlerAddrs[] = {
     0x466f330, 0x46828cb, 0x468e838, 0x467b3f8, 0x4678829, 0x46822e2,
     0x469479b, 0x468f10b, 0x46a2aed, 0x466d0d2, 0x46a5502, 0x469b3ec,
@@ -21,55 +25,49 @@ static UINT32 handlerAddrs[] = {
 };
 #define NUM_HANDLERS (sizeof(handlerAddrs)/sizeof(handlerAddrs[0]))
 
-// Dump VM context memory
-VOID DumpContext(VOID* ip, CONTEXT* ctx)
+// Dispatch step3 (0x468461d): s2_eax loaded
+VOID RecordDispatch(VOID* ip, CONTEXT* ctx)
 {
-    if (contextDumped) return;
-    contextDumped = TRUE;
-    
     PIN_GetLock(&traceLock, 1);
-    
-    // Read EDI to get VM context base
     ADDRINT edi = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI);
-    fprintf(trace, "CONTEXT edi=%x\n", (UINT32)edi);
-    
-    // Dump VM context (4KB)
-    for (UINT32 offset = 0; offset < 0x1000; offset += 16) {
-        fprintf(trace, "C %04x: ", offset);
-        for (UINT32 i = 0; i < 16; i += 4) {
+    ADDRINT eax = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX);
+    ADDRINT ebx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX);
+    ADDRINT esi = PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI);
+
+    fprintf(trace, "D %x eax=%x ebx=%x esi=%x edi=%x\n",
+            (UINT32)(ADDRINT)ip, (UINT32)eax, (UINT32)ebx,
+            (UINT32)esi, (UINT32)edi);
+
+    // Dump EDI memory on change
+    if (edi != lastEdi) {
+        fprintf(trace, "EDI %x\n", (UINT32)edi);
+        for (UINT32 off = 0; off < 0x1000; off += 4) {
             UINT32 val;
-            if (PIN_SafeCopy(&val, (void*)(edi + offset + i), 4) == 4) {
-                fprintf(trace, "%08x ", val);
-            } else {
-                fprintf(trace, "???????? ");
+            if (PIN_SafeCopy(&val, (void*)(edi + off), 4) == 4) {
+                fprintf(trace, "M %04x %08x\n", off, val);
             }
         }
-        fprintf(trace, "\n");
+        fprintf(trace, "END_EDI\n");
+        lastEdi = edi;
     }
-    
-    fprintf(trace, "END_CONTEXT\n");
     PIN_ReleaseLock(&traceLock);
 }
 
-// Record handler execution
+// Handler entry
 VOID RecordHandler(VOID* ip, CONTEXT* ctx)
 {
     PIN_GetLock(&traceLock, 1);
     totalHits++;
-    
     if (totalHits <= maxHits) {
-        UINT32 rip = (UINT32)(ADDRINT)ip;
-        UINT32 eax = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX);
-        UINT32 ebx = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX);
-        UINT32 ecx = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX);
-        UINT32 edx = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX);
-        UINT32 esi = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI);
-        UINT32 edi = (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI);
-        
         fprintf(trace, "H %x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x\n",
-                rip, eax, ebx, ecx, edx, esi, edi);
+                (UINT32)(ADDRINT)ip,
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX),
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
+                (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI));
     }
-    
     PIN_ReleaseLock(&traceLock);
 }
 
@@ -77,19 +75,26 @@ VOID Instruction(INS ins, VOID* v)
 {
     ADDRINT addr = INS_Address(ins);
     UINT32 a = (UINT32)addr;
-    
+
+    // Dispatch step3
+    if (a == 0x468461d) {
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordDispatch,
+                       IARG_INST_PTR, IARG_CONTEXT, IARG_END);
+    }
+
+    // Handler entries
     for (int i = 0; i < NUM_HANDLERS; i++) {
         if (a == handlerAddrs[i]) {
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)DumpContext, IARG_INST_PTR, IARG_CONTEXT, IARG_END);
-            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordHandler, IARG_INST_PTR, IARG_CONTEXT, IARG_END);
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordHandler,
+                           IARG_INST_PTR, IARG_CONTEXT, IARG_END);
             return;
         }
     }
 }
 
-VOID Fini(INT32 code, VOID* v) { 
-    fprintf(trace, "#eof total=%llu\n", totalHits); 
-    fclose(trace); 
+VOID Fini(INT32 code, VOID* v) {
+    fprintf(trace, "#eof total=%llu\n", totalHits);
+    fclose(trace);
 }
 
 int main(int argc, char* argv[])
