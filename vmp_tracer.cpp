@@ -124,6 +124,21 @@ VOID RecordRecvAfter(VOID* ip, CONTEXT* ctx, ADDRINT retVal, ADDRINT bufAddr, AD
     PIN_ReleaseLock(&traceLock);
 }
 
+// Track calls into ws2_32 address range
+static ADDRINT ws2Base = 0, ws2End = 0;
+
+VOID RecordCallToWs2(VOID* ip, ADDRINT target, CONTEXT* ctx)
+{
+    PIN_GetLock(&traceLock, 1);
+    fprintf(trace, "CALL_WS2 %x -> %x eax=%x ebx=%x ecx=%x edx=%x\n",
+            (UINT32)(ADDRINT)ip, (UINT32)target,
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX));
+    PIN_ReleaseLock(&traceLock);
+}
+
 VOID Instruction(INS ins, VOID* v)
 {
     ADDRINT addr = INS_Address(ins);
@@ -141,6 +156,15 @@ VOID Instruction(INS ins, VOID* v)
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordHandler,
                            IARG_INST_PTR, IARG_CONTEXT, IARG_END);
             return;
+        }
+    }
+
+    // Track CALL instructions that jump to ws2_32 address range
+    if (ws2Base > 0 && INS_IsCall(ins)) {
+        ADDRINT target = INS_DirectBranchOrCallTargetAddress(ins);
+        if (target >= ws2Base && target < ws2End) {
+            INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordCallToWs2,
+                           IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, IARG_CONTEXT, IARG_END);
         }
     }
 }
@@ -210,8 +234,10 @@ VOID ImageLoad(IMG img, VOID* v)
     // Hook ws2_32.dll - by address from PE export table
     if (imgLower.find("ws2_32") != std::string::npos) {
         ADDRINT base = IMG_StartAddress(img);
-        fprintf(trace, "#loaded ws2_32 base=%x size=%x\n",
-                (UINT32)base, (UINT32)IMG_SizeMapped(img));
+        ws2Base = base;
+        ws2End = base + IMG_SizeMapped(img);
+        fprintf(trace, "#loaded ws2_32 base=%x size=%x end=%x\n",
+                (UINT32)base, (UINT32)IMG_SizeMapped(img), (UINT32)ws2End);
 
         struct { const char* name; UINT32 rva; BOOL isRecv; BOOL isConn; } targets[] = {
             {"send",    0x176b0, FALSE, FALSE},
