@@ -16,7 +16,8 @@ ADDRINT lastEdi = 0;
 
 // Cipher handler 0x046a4324 tracking
 #define CIPHER_HANDLER_ADDR  0x046a4324
-#define CIPHER_MAX_CAPTURES  1000
+#define CIPHER_MAX_CAPTURES  2000
+#define CIPHER_SKIP_FIRST    50000  // Skip initialization phase
 static UINT64 cipherCaptureCount = 0;
 static UINT64 dispatchCount = 0;
 static BOOL   cipherPending = FALSE;   // Set when handler 0x046a4324 enters
@@ -91,7 +92,11 @@ VOID RecordCipherHandler(VOID* ip, CONTEXT* ctx)
 {
     PIN_GetLock(&cipherLock, 1);
     cipherCaptureCount++;
-    if (cipherCaptureCount <= CIPHER_MAX_CAPTURES) {
+    if (cipherCaptureCount <= CIPHER_SKIP_FIRST) {
+        PIN_ReleaseLock(&cipherLock);
+        return;
+    }
+    if (cipherCaptureCount <= CIPHER_SKIP_FIRST + CIPHER_MAX_CAPTURES) {
         ADDRINT eax = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX);
         ADDRINT ebx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX);
         ADDRINT ecx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX);
@@ -145,7 +150,7 @@ VOID RecordCipherAfter(VOID* ip, CONTEXT* ctx)
     if (!cipherPending) return;
 
     PIN_GetLock(&cipherLock, 1);
-    if (cipherPending && cipherCaptureCount <= CIPHER_MAX_CAPTURES) {
+    if (cipherPending && cipherCaptureCount > CIPHER_SKIP_FIRST && cipherCaptureCount <= CIPHER_SKIP_FIRST + CIPHER_MAX_CAPTURES) {
         ADDRINT eax = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX);
         ADDRINT ebx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX);
         ADDRINT ecx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX);
