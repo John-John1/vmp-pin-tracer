@@ -1,0 +1,31 @@
+name: Download Pin 4.3.1
+on: workflow_dispatch
+jobs:
+  download:
+    runs-on: windows-latest
+    steps:
+    - name: Download Pin 4.3.1
+      shell: pwsh
+      run: |
+        # 尝试从Intel下载Pin 4.3.1
+        $url = "https://software.intel.com/sites/landingpage/pintool/downloads/pin-external-4.3.1-99850-g1e7e2b37c-clang-windows.zip"
+        $output = "pin-4.3.1.zip"
+        
+        # 使用Invoke-WebRequest下载
+        Invoke-WebRequest -Uri $url -OutFile $output -UseBasicParsing
+        
+        # 检查文件大小
+        $fileSize = (Get-Item $output).Length
+        Write-Host "Downloaded: $fileSize bytes"
+        
+        # 解压
+        Expand-Archive -Path $output -DestinationPath "pin-4.3.1"
+        
+        # 列出内容
+        Get-ChildItem "pin-4.3.1" -Recurse | Select-Object FullName, Length
+        
+    - name: Upload
+      uses: actions/upload-artifact@v4
+      with:
+        name: pin-4.3.1
+        path: pin-4.3.1/
