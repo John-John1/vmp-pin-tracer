@@ -167,11 +167,11 @@ VOID Instruction(INS ins, VOID* v)
                        IARG_INST_PTR, IARG_CONTEXT, IARG_END);
     }
 
-    // VEXIT target (predicted: 0x048182ff)
-    if (a == 0x048182ff) {
-        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordVExit,
-                       IARG_INST_PTR, IARG_CONTEXT, IARG_END);
-    }
+    // VEXIT target (predicted: 0x048182ff) - disabled for stability
+    // if (a == 0x048182ff) {
+    //     INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordVExit,
+    //                    IARG_INST_PTR, IARG_CONTEXT, IARG_END);
+    // }
 
     // Handler entries
     for (int i = 0; i < NUM_HANDLERS; i++) {
