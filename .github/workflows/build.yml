@@ -41,6 +41,7 @@ jobs:
       run: |
         export PATH="/c/Program Files/LLVM/bin:$PATH"
         cd pin/source/tools/VMPTracer
+        touch vmp_tracer.cpp
         make -f makefile PIN_ROOT=../../.. TARGET=ia32 2>&1
     - name: Upload
       uses: actions/upload-artifact@v4
