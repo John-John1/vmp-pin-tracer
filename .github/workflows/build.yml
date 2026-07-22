@@ -29,7 +29,7 @@ jobs:
       shell: pwsh
       run: |
         New-Item -ItemType Directory -Path "pin/source/tools/VMPTracer" -Force
-        Copy-Item "vmp_tracer.cpp" -Destination "pin/source/tools/VMPTracer/"
+        Copy-Item "minimal_test.cpp" -Destination "pin/source/tools/VMPTracer/"
         Copy-Item "makefile.rules" -Destination "pin/source/tools/VMPTracer/"
     - name: Create makefile
       shell: pwsh

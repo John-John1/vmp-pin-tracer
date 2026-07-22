@@ -1,1 +1,1 @@
-TOOL_ROOTS := vmp_tracer
+TOOL_ROOTS := minimal_test
