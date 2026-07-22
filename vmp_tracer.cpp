@@ -212,47 +212,52 @@ VOID ImageLoad(IMG img, VOID* v)
         fprintf(trace, "#loaded ws2_32 base=%x size=%x\n",
                 (UINT32)IMG_StartAddress(img), (UINT32)IMG_SizeMapped(img));
 
-        // Iterate all RTNs in all sections
+        // Debug: list first 20 RTNs
+        int rtCount = 0;
         for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
             for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-                std::string rtnName = RTN_Name(rtn);
-                ADDRINT rtnAddr = RTN_Address(rtn);
-
-                BOOL isSend = (rtnName == "send" || rtnName == "WSASend" ||
-                               rtnName == "sendto" || rtnName == "WSASendTo");
-                BOOL isRecv = (rtnName == "recv" || rtnName == "WSARecv" ||
-                               rtnName == "recvfrom" || rtnName == "WSARecvFrom");
-                BOOL isConn = (rtnName == "connect" || rtnName == "WSAConnect");
-
-                if (isSend || isRecv || isConn) {
-                    fprintf(trace, "#rt %s at %x\n", rtnName.c_str(), (UINT32)rtnAddr);
-                    RTN_Open(rtn);
-
-                    if (isConn) {
-                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordConnectBefore,
-                                       IARG_INST_PTR, IARG_CONTEXT,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                                       IARG_END);
-                        fprintf(trace, "#hooked %s\n", rtnName.c_str());
-                    } else if (isRecv) {
-                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
-                                       IARG_INST_PTR, IARG_CONTEXT,
-                                       IARG_FUNCRET_EXITPOINT_VALUE,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                                       IARG_END);
-                        fprintf(trace, "#hooked %s\n", rtnName.c_str());
-                    } else {
-                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
-                                       IARG_INST_PTR, IARG_CONTEXT,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                                       IARG_END);
-                        fprintf(trace, "#hooked %s\n", rtnName.c_str());
-                    }
-                    RTN_Close(rtn);
+                if (rtCount < 20) {
+                    fprintf(trace, "#rt[%d] %s at %x\n", rtCount,
+                            RTN_Name(rtn).c_str(), (UINT32)RTN_Address(rtn));
                 }
+                rtCount++;
+            }
+        }
+        fprintf(trace, "#total_rt %d\n", rtCount);
+
+        // Hook by name
+        const char* funcs[] = {"send", "recv", "connect", "WSASend", "WSARecv", NULL};
+        BOOL isRecvArr[] = {FALSE, TRUE, FALSE, FALSE, TRUE};
+        BOOL isConnArr[] = {FALSE, FALSE, TRUE, FALSE, FALSE};
+
+        for (int i = 0; funcs[i]; i++) {
+            RTN rtn = RTN_FindByName(img, funcs[i]);
+            if (RTN_Valid(rtn)) {
+                fprintf(trace, "#hook %s at %x\n", funcs[i], (UINT32)RTN_Address(rtn));
+                RTN_Open(rtn);
+                if (isConnArr[i]) {
+                    INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordConnectBefore,
+                                   IARG_INST_PTR, IARG_CONTEXT,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                   IARG_END);
+                } else if (isRecvArr[i]) {
+                    INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
+                                   IARG_INST_PTR, IARG_CONTEXT,
+                                   IARG_FUNCRET_EXITPOINT_VALUE,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                   IARG_END);
+                } else {
+                    INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
+                                   IARG_INST_PTR, IARG_CONTEXT,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                   IARG_END);
+                }
+                RTN_Close(rtn);
+            } else {
+                fprintf(trace, "#miss %s\n", funcs[i]);
             }
         }
     }
