@@ -248,7 +248,7 @@ int main(int argc, char* argv[])
 {
     trace = fopen("vmp_context_trace.out", "w");
     if (!trace) return 1;
-    cipherTrace = fopen("vmp_network_trace.out", "w");
+    cipherTrace = fopen("vmp_cipher_trace.out", "w");
     if (!cipherTrace) { fclose(trace); return 1; }
 
     fprintf(trace, "#start\n");
