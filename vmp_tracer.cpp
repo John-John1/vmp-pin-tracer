@@ -207,49 +207,51 @@ VOID ImageLoad(IMG img, VOID* v)
     // Convert to lowercase for comparison
     for (auto& c : imgLower) c = tolower(c);
 
-    // Hook ws2_32.dll - try multiple approaches
+    // Hook ws2_32.dll
     if (imgLower.find("ws2_32") != std::string::npos) {
         fprintf(trace, "#loaded ws2_32 base=%x size=%x\n",
                 (UINT32)IMG_StartAddress(img), (UINT32)IMG_SizeMapped(img));
 
-        // Approach 1: Try by name
-        BOOL hooked = FALSE;
-        hooked |= TryHookFunc(img, "send", FALSE);
-        hooked |= TryHookFunc(img, "recv", TRUE);
-        hooked |= TryHookFunc(img, "WSASend", FALSE);
-        hooked |= TryHookFunc(img, "WSARecv", TRUE);
+        // Iterate all RTNs in all sections
+        for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
+            for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
+                std::string rtnName = RTN_Name(rtn);
+                ADDRINT rtnAddr = RTN_Address(rtn);
 
-        // Approach 2: If by name failed, iterate all RTNs
-        if (!hooked) {
-            fprintf(trace, "#fallback: iterating RTNs\n");
-            for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-                for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-                    std::string rtnName = RTN_Name(rtn);
-                    if (rtnName == "send" || rtnName == "recv" ||
-                        rtnName == "WSASend" || rtnName == "WSARecv" ||
-                        rtnName == "connect") {
-                        fprintf(trace, "#found_rt %s at %x\n",
-                                rtnName.c_str(), (UINT32)RTN_Address(rtn));
+                BOOL isSend = (rtnName == "send" || rtnName == "WSASend" ||
+                               rtnName == "sendto" || rtnName == "WSASendTo");
+                BOOL isRecv = (rtnName == "recv" || rtnName == "WSARecv" ||
+                               rtnName == "recvfrom" || rtnName == "WSARecvFrom");
+                BOOL isConn = (rtnName == "connect" || rtnName == "WSAConnect");
 
-                        BOOL isRecv = (rtnName == "recv" || rtnName == "WSARecv");
-                        RTN_Open(rtn);
-                        if (isRecv) {
-                            INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
-                                           IARG_INST_PTR, IARG_CONTEXT,
-                                           IARG_FUNCRET_EXITPOINT_VALUE,
-                                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                                           IARG_END);
-                        } else {
-                            INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
-                                           IARG_INST_PTR, IARG_CONTEXT,
-                                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
-                                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
-                                           IARG_END);
-                        }
-                        RTN_Close(rtn);
+                if (isSend || isRecv || isConn) {
+                    fprintf(trace, "#rt %s at %x\n", rtnName.c_str(), (UINT32)rtnAddr);
+                    RTN_Open(rtn);
+
+                    if (isConn) {
+                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordConnectBefore,
+                                       IARG_INST_PTR, IARG_CONTEXT,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                       IARG_END);
+                        fprintf(trace, "#hooked %s\n", rtnName.c_str());
+                    } else if (isRecv) {
+                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
+                                       IARG_INST_PTR, IARG_CONTEXT,
+                                       IARG_FUNCRET_EXITPOINT_VALUE,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                       IARG_END);
+                        fprintf(trace, "#hooked %s\n", rtnName.c_str());
+                    } else {
+                        INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
+                                       IARG_INST_PTR, IARG_CONTEXT,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                       IARG_END);
                         fprintf(trace, "#hooked %s\n", rtnName.c_str());
                     }
+                    RTN_Close(rtn);
                 }
             }
         }
