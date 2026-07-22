@@ -207,41 +207,40 @@ VOID ImageLoad(IMG img, VOID* v)
     // Convert to lowercase for comparison
     for (auto& c : imgLower) c = tolower(c);
 
-    // Hook ws2_32.dll
+    // Hook ws2_32.dll - by address from PE export table
     if (imgLower.find("ws2_32") != std::string::npos) {
+        ADDRINT base = IMG_StartAddress(img);
         fprintf(trace, "#loaded ws2_32 base=%x size=%x\n",
-                (UINT32)IMG_StartAddress(img), (UINT32)IMG_SizeMapped(img));
+                (UINT32)base, (UINT32)IMG_SizeMapped(img));
 
-        // Debug: list first 20 RTNs
-        int rtCount = 0;
-        for (SEC sec = IMG_SecHead(img); SEC_Valid(sec); sec = SEC_Next(sec)) {
-            for (RTN rtn = SEC_RtnHead(sec); RTN_Valid(rtn); rtn = RTN_Next(rtn)) {
-                if (rtCount < 20) {
-                    fprintf(trace, "#rt[%d] %s at %x\n", rtCount,
-                            RTN_Name(rtn).c_str(), (UINT32)RTN_Address(rtn));
-                }
-                rtCount++;
-            }
-        }
-        fprintf(trace, "#total_rt %d\n", rtCount);
+        // ws2_32.dll export RVAs (from PE analysis)
+        // These are stable across Windows versions for ws2_32
+        struct { const char* name; UINT32 rva; BOOL isRecv; BOOL isConn; } targets[] = {
+            {"send",    0x176b0, FALSE, FALSE},
+            {"recv",    0x16e00, TRUE,  FALSE},
+            {"connect", 0x17840, FALSE, TRUE},
+            {"WSASend", 0x10ab0, FALSE, FALSE},
+            {"WSARecv", 0x11460, TRUE,  FALSE},
+            {NULL, 0, FALSE, FALSE}
+        };
 
-        // Hook by name
-        const char* funcs[] = {"send", "recv", "connect", "WSASend", "WSARecv", NULL};
-        BOOL isRecvArr[] = {FALSE, TRUE, FALSE, FALSE, TRUE};
-        BOOL isConnArr[] = {FALSE, FALSE, TRUE, FALSE, FALSE};
+        for (int i = 0; targets[i].name; i++) {
+            ADDRINT funcAddr = base + targets[i].rva;
+            fprintf(trace, "#target %s RVA=%x abs=%x\n",
+                    targets[i].name, targets[i].rva, (UINT32)funcAddr);
 
-        for (int i = 0; funcs[i]; i++) {
-            RTN rtn = RTN_FindByName(img, funcs[i]);
+            // Create RTN at this address
+            RTN rtn = RTN_CreateAt(funcAddr, targets[i].name);
             if (RTN_Valid(rtn)) {
-                fprintf(trace, "#hook %s at %x\n", funcs[i], (UINT32)RTN_Address(rtn));
+                fprintf(trace, "#hook %s at %x\n", targets[i].name, (UINT32)funcAddr);
                 RTN_Open(rtn);
-                if (isConnArr[i]) {
+                if (targets[i].isConn) {
                     INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordConnectBefore,
                                    IARG_INST_PTR, IARG_CONTEXT,
                                    IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
                                    IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
                                    IARG_END);
-                } else if (isRecvArr[i]) {
+                } else if (targets[i].isRecv) {
                     INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
                                    IARG_INST_PTR, IARG_CONTEXT,
                                    IARG_FUNCRET_EXITPOINT_VALUE,
@@ -257,7 +256,7 @@ VOID ImageLoad(IMG img, VOID* v)
                 }
                 RTN_Close(rtn);
             } else {
-                fprintf(trace, "#miss %s\n", funcs[i]);
+                fprintf(trace, "#fail %s at %x\n", targets[i].name, (UINT32)funcAddr);
             }
         }
     }
