@@ -213,8 +213,6 @@ VOID ImageLoad(IMG img, VOID* v)
         fprintf(trace, "#loaded ws2_32 base=%x size=%x\n",
                 (UINT32)base, (UINT32)IMG_SizeMapped(img));
 
-        // ws2_32.dll export RVAs (from PE analysis)
-        // These are stable across Windows versions for ws2_32
         struct { const char* name; UINT32 rva; BOOL isRecv; BOOL isConn; } targets[] = {
             {"send",    0x176b0, FALSE, FALSE},
             {"recv",    0x16e00, TRUE,  FALSE},
@@ -229,7 +227,6 @@ VOID ImageLoad(IMG img, VOID* v)
             fprintf(trace, "#target %s RVA=%x abs=%x\n",
                     targets[i].name, targets[i].rva, (UINT32)funcAddr);
 
-            // Create RTN at this address
             RTN rtn = RTN_CreateAt(funcAddr, targets[i].name);
             if (RTN_Valid(rtn)) {
                 fprintf(trace, "#hook %s at %x\n", targets[i].name, (UINT32)funcAddr);
@@ -257,6 +254,48 @@ VOID ImageLoad(IMG img, VOID* v)
                 RTN_Close(rtn);
             } else {
                 fprintf(trace, "#fail %s at %x\n", targets[i].name, (UINT32)funcAddr);
+            }
+        }
+    }
+
+    // Hook wininet.dll - program may use WinINet for networking
+    if (imgLower.find("wininet") != std::string::npos) {
+        ADDRINT base = IMG_StartAddress(img);
+        fprintf(trace, "#loaded wininet base=%x size=%x\n",
+                (UINT32)base, (UINT32)IMG_SizeMapped(img));
+
+        // WinINet send/recv equivalents
+        struct { const char* name; UINT32 rva; BOOL isRecv; } winTargets[] = {
+            {"HttpSendRequestA",  0x0, FALSE},
+            {"HttpSendRequestW",  0x0, FALSE},
+            {"InternetReadFile",  0x0, TRUE},
+            {"InternetWriteFile", 0x0, FALSE},
+            {"HttpOpenRequestA",  0x0, FALSE},
+            {"HttpOpenRequestW",  0x0, FALSE},
+            {NULL, 0, FALSE}
+        };
+
+        // Try by name since we don't have RVAs for wininet
+        for (int i = 0; winTargets[i].name; i++) {
+            RTN rtn = RTN_FindByName(img, winTargets[i].name);
+            if (RTN_Valid(rtn)) {
+                fprintf(trace, "#hook_wininet %s at %x\n", winTargets[i].name, (UINT32)RTN_Address(rtn));
+                RTN_Open(rtn);
+                if (winTargets[i].isRecv) {
+                    INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
+                                   IARG_INST_PTR, IARG_CONTEXT,
+                                   IARG_FUNCRET_EXITPOINT_VALUE,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                   IARG_END);
+                } else {
+                    INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
+                                   IARG_INST_PTR, IARG_CONTEXT,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                                   IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                                   IARG_END);
+                }
+                RTN_Close(rtn);
             }
         }
     }
