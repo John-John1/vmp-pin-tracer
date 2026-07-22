@@ -1,6 +1,7 @@
 /*
- * VMP 3.6 VM Context + Dispatch + Handler Capture
- * Tracks: handler entries, dispatch step3 (s2_eax), EDI memory dumps
+ * VMP 3.6 VM Context + Dispatch + Handler + Network Capture
+ * Tracks: handler entries, dispatch step3 (s2_eax), EDI memory dumps,
+ *         ws2_32!send and ws2_32!recv buffer contents
  */
 #include "pin.H"
 #include <stdio.h>
@@ -8,7 +9,8 @@
 FILE* trace;
 PIN_LOCK traceLock;
 UINT64 totalHits = 0;
-UINT64 maxHits = 50000;
+UINT64 maxHits = 100000;
+UINT64 dispatchCount = 0;
 ADDRINT lastEdi = 0;
 
 // Handler addresses (54 known)
@@ -29,13 +31,14 @@ static UINT32 handlerAddrs[] = {
 VOID RecordDispatch(VOID* ip, CONTEXT* ctx)
 {
     PIN_GetLock(&traceLock, 1);
+    dispatchCount++;
     ADDRINT edi = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI);
     ADDRINT eax = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX);
     ADDRINT ebx = PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX);
     ADDRINT esi = PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI);
 
-    fprintf(trace, "D %x eax=%x ebx=%x esi=%x edi=%x\n",
-            (UINT32)(ADDRINT)ip, (UINT32)eax, (UINT32)ebx,
+    fprintf(trace, "D %llu %x eax=%x ebx=%x esi=%x edi=%x\n",
+            dispatchCount, (UINT32)(ADDRINT)ip, (UINT32)eax, (UINT32)ebx,
             (UINT32)esi, (UINT32)edi);
 
     // Dump EDI memory on change
@@ -59,8 +62,8 @@ VOID RecordHandler(VOID* ip, CONTEXT* ctx)
     PIN_GetLock(&traceLock, 1);
     totalHits++;
     if (totalHits <= maxHits) {
-        fprintf(trace, "H %x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x\n",
-                (UINT32)(ADDRINT)ip,
+        fprintf(trace, "H %llu %x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x\n",
+                dispatchCount, (UINT32)(ADDRINT)ip,
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
@@ -68,6 +71,56 @@ VOID RecordHandler(VOID* ip, CONTEXT* ctx)
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI));
     }
+    PIN_ReleaseLock(&traceLock);
+}
+
+// Network: send() - capture outbound data
+// int send(SOCKET s, const char* buf, int len, int flags);
+VOID RecordSendBefore(VOID* ip, CONTEXT* ctx, ADDRINT bufAddr, ADDRINT len)
+{
+    PIN_GetLock(&traceLock, 1);
+    UINT32 bufLen = (UINT32)len;
+    if (bufLen > 8192) bufLen = 8192;  // cap at 8KB
+
+    fprintf(trace, "SEND %llu len=%u\n", dispatchCount, bufLen);
+
+    // Dump buffer contents
+    if (bufLen > 0 && bufLen <= 8192) {
+        UINT8* buf = new UINT8[bufLen];
+        size_t copied = PIN_SafeCopy(buf, (void*)bufAddr, bufLen);
+        fprintf(trace, "HEX ");
+        for (size_t i = 0; i < copied; i++) {
+            fprintf(trace, "%02x", buf[i]);
+        }
+        fprintf(trace, "\n");
+        delete[] buf;
+    }
+    PIN_ReleaseLock(&traceLock);
+}
+
+// Network: recv() - capture inbound data
+// int recv(SOCKET s, char* buf, int len, int flags);
+// We record AFTER recv returns, so we need the return value
+VOID RecordRecvAfter(VOID* ip, CONTEXT* ctx, ADDRINT retVal, ADDRINT bufAddr, ADDRINT len)
+{
+    PIN_GetLock(&traceLock, 1);
+    INT32 recvLen = (INT32)retVal;
+    if (recvLen <= 0 || recvLen > 8192) {
+        PIN_ReleaseLock(&traceLock);
+        return;
+    }
+
+    fprintf(trace, "RECV %llu len=%u\n", dispatchCount, recvLen);
+
+    // Dump received data
+    UINT8* buf = new UINT8[recvLen];
+    size_t copied = PIN_SafeCopy(buf, (void*)bufAddr, recvLen);
+    fprintf(trace, "HEX ");
+    for (size_t i = 0; i < copied; i++) {
+        fprintf(trace, "%02x", buf[i]);
+    }
+    fprintf(trace, "\n");
+    delete[] buf;
     PIN_ReleaseLock(&traceLock);
 }
 
@@ -92,18 +145,64 @@ VOID Instruction(INS ins, VOID* v)
     }
 }
 
+// Image load callback - hook ws2_32.dll exports
+VOID ImageLoad(IMG img, VOID* v)
+{
+    const char* imgName = IMG_Name(img).c_str();
+
+    // Only hook ws2_32.dll
+    if (IMG_Name(img).find("ws2_32") == std::string::npos &&
+        IMG_Name(img).find("WS2_32") == std::string::npos) {
+        return;
+    }
+
+    fprintf(trace, "#loaded %s base=%x\n", imgName, (UINT32)IMG_StartAddress(img));
+
+    // Hook send()
+    RTN sendRtn = RTN_FindByName(img, "send");
+    if (RTN_Valid(sendRtn)) {
+        fprintf(trace, "#hook send at %x\n", (UINT32)RTN_Address(sendRtn));
+        RTN_Open(sendRtn);
+        // send(SOCKET s, const char* buf, int len, int flags)
+        // arg0=socket, arg1=buf, arg2=len
+        INS_InsertCall(RTN_InsHead(sendRtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
+                       IARG_INST_PTR, IARG_CONTEXT,
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // buf
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // len
+                       IARG_END);
+        RTN_Close(sendRtn);
+    }
+
+    // Hook recv() - need to capture AFTER it returns
+    RTN recvRtn = RTN_FindByName(img, "recv");
+    if (RTN_Valid(recvRtn)) {
+        fprintf(trace, "#hook recv at %x\n", (UINT32)RTN_Address(recvRtn));
+        RTN_Open(recvRtn);
+        // recv(SOCKET s, char* buf, int len, int flags)
+        // We need return value (bytes received) and buf address
+        INS_InsertCall(RTN_InsHead(recvRtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
+                       IARG_INST_PTR, IARG_CONTEXT,
+                       IARG_FUNCRET_EXITPOINT_VALUE,     // return value
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // buf
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // len
+                       IARG_END);
+        RTN_Close(recvRtn);
+    }
+}
+
 VOID Fini(INT32 code, VOID* v) {
-    fprintf(trace, "#eof total=%llu\n", totalHits);
+    fprintf(trace, "#eof total=%llu dispatches=%llu\n", totalHits, dispatchCount);
     fclose(trace);
 }
 
 int main(int argc, char* argv[])
 {
-    trace = fopen("vmp_context_trace.out", "w");
+    trace = fopen("vmp_network_trace.out", "w");
     if (!trace) return 1;
     PIN_InitLock(&traceLock);
     if (PIN_Init(argc, argv)) return -1;
     INS_AddInstrumentFunction(Instruction, 0);
+    IMG_AddInstrumentFunction(ImageLoad, 0);
     PIN_AddFiniFunction(Fini, 0);
     PIN_StartProgram();
     return 0;
