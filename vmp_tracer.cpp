@@ -156,10 +156,18 @@ VOID RecordCallToWs2(VOID* ip, ADDRINT target, CONTEXT* ctx)
     PIN_ReleaseLock(&traceLock);
 }
 
+UINT64 instrCount = 0;
+
 VOID Instruction(INS ins, VOID* v)
 {
     ADDRINT addr = INS_Address(ins);
     UINT32 a = (UINT32)addr;
+
+    // Debug: log first 100 instrumented instructions
+    instrCount++;
+    if (instrCount <= 100) {
+        fprintf(trace, "#instr %llu addr=%x\n", instrCount, a);
+    }
 
     // Dispatch step3
     if (a == 0x468461d) {
@@ -386,7 +394,7 @@ VOID Fini(INT32 code, VOID* v) {
 
 int main(int argc, char* argv[])
 {
-    trace = fopen("vmp_network_trace.out", "w");
+    trace = fopen("D:\\analysis\\vmp_network_trace.out", "w");
     if (!trace) return 1;
     PIN_InitLock(&traceLock);
     if (PIN_Init(argc, argv)) return -1;
