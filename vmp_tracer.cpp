@@ -9,7 +9,7 @@
 FILE* trace;
 PIN_LOCK traceLock;
 UINT64 totalHits = 0;
-UINT64 maxHits = 200000;
+UINT64 maxHits = 500000;
 UINT64 dispatchCount = 0;
 ADDRINT lastEdi = 0;
 
@@ -71,6 +71,23 @@ VOID RecordHandler(VOID* ip, CONTEXT* ctx)
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
                 (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI));
     }
+    PIN_ReleaseLock(&traceLock);
+}
+
+// VEXIT - VM exit point
+VOID RecordVExit(VOID* ip, CONTEXT* ctx)
+{
+    PIN_GetLock(&traceLock, 1);
+    fprintf(trace, "VEXIT %llu %x eax=%x ebx=%x ecx=%x edx=%x esi=%x edi=%x esp=%x ebp=%x\n",
+            dispatchCount, (UINT32)(ADDRINT)ip,
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EAX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ECX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDX),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESI),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EDI),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_ESP),
+            (UINT32)PIN_GetContextReg(ctx, LEVEL_BASE::REG_EBP));
     PIN_ReleaseLock(&traceLock);
 }
 
@@ -147,6 +164,12 @@ VOID Instruction(INS ins, VOID* v)
     // Dispatch step3
     if (a == 0x468461d) {
         INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordDispatch,
+                       IARG_INST_PTR, IARG_CONTEXT, IARG_END);
+    }
+
+    // VEXIT target (predicted: 0x048182ff)
+    if (a == 0x048182ff) {
+        INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordVExit,
                        IARG_INST_PTR, IARG_CONTEXT, IARG_END);
     }
 
