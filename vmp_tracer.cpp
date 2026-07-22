@@ -9,7 +9,7 @@
 FILE* trace;
 PIN_LOCK traceLock;
 UINT64 totalHits = 0;
-UINT64 maxHits = 100000;
+UINT64 maxHits = 200000;
 UINT64 dispatchCount = 0;
 ADDRINT lastEdi = 0;
 
@@ -145,48 +145,118 @@ VOID Instruction(INS ins, VOID* v)
     }
 }
 
-// Image load callback - hook ws2_32.dll exports
+// Network: connect() - trace connection attempts
+// int connect(SOCKET s, const struct sockaddr* name, int namelen);
+VOID RecordConnectBefore(VOID* ip, CONTEXT* ctx, ADDRINT nameAddr, ADDRINT namelen)
+{
+    PIN_GetLock(&traceLock, 1);
+    // sockaddr_in: family(2) + port(2) + addr(4) + pad(8)
+    UINT8 addrBuf[16];
+    if (namelen >= 16 && PIN_SafeCopy(addrBuf, (void*)nameAddr, 16) == 16) {
+        UINT16 family = *(UINT16*)addrBuf;
+        UINT16 port = *(UINT16*)(addrBuf + 2);
+        UINT32 ipAddr = *(UINT32*)(addrBuf + 4);
+        port = ((port >> 8) & 0xff) | ((port & 0xff) << 8); // ntohs
+        fprintf(trace, "CONN %llu family=%u port=%u addr=%u.%u.%u.%u\n",
+                dispatchCount, family, port,
+                ipAddr & 0xff, (ipAddr >> 8) & 0xff,
+                (ipAddr >> 16) & 0xff, (ipAddr >> 24) & 0xff);
+    }
+    PIN_ReleaseLock(&traceLock);
+}
+
+// Try to hook a function by name in an image
+BOOL TryHookFunc(IMG img, const char* funcName, BOOL isRecv)
+{
+    RTN rtn = RTN_FindByName(img, funcName);
+    if (!RTN_Valid(rtn)) return FALSE;
+
+    fprintf(trace, "#hook %s at %x\n", funcName, (UINT32)RTN_Address(rtn));
+    RTN_Open(rtn);
+
+    if (isRecv) {
+        // recv: capture after return, need ret val + buf + len
+        INS_InsertCall(RTN_InsHead(rtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
+                       IARG_INST_PTR, IARG_CONTEXT,
+                       IARG_FUNCRET_EXITPOINT_VALUE,
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                       IARG_END);
+    } else {
+        // send: capture before call, need buf + len
+        INS_InsertCall(RTN_InsHead(rtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
+                       IARG_INST_PTR, IARG_CONTEXT,
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+                       IARG_END);
+    }
+    RTN_Close(rtn);
+    return TRUE;
+}
+
+// Image load callback - hook network functions
 VOID ImageLoad(IMG img, VOID* v)
 {
-    const char* imgName = IMG_Name(img).c_str();
+    // Log all loaded DLLs
+    fprintf(trace, "#dll %s base=%x size=%x\n",
+            IMG_Name(img).c_str(),
+            (UINT32)IMG_StartAddress(img),
+            (UINT32)IMG_SizeMapped(img));
 
-    // Only hook ws2_32.dll
-    if (IMG_Name(img).find("ws2_32") == std::string::npos &&
-        IMG_Name(img).find("WS2_32") == std::string::npos) {
-        return;
+    std::string imgLower = IMG_Name(img);
+    // Convert to lowercase for comparison
+    for (auto& c : imgLower) c = tolower(c);
+
+    // Hook ws2_32.dll
+    if (imgLower.find("ws2_32") != std::string::npos) {
+        fprintf(trace, "#loaded ws2_32 base=%x\n", (UINT32)IMG_StartAddress(img));
+        TryHookFunc(img, "send", FALSE);
+        TryHookFunc(img, "recv", TRUE);
+        TryHookFunc(img, "WSASend", FALSE);
+        TryHookFunc(img, "WSARecv", TRUE);
+        TryHookFunc(img, "sendto", FALSE);
+        TryHookFunc(img, "recvfrom", TRUE);
+        // Hook connect()
+        RTN connRtn = RTN_FindByName(img, "connect");
+        if (RTN_Valid(connRtn)) {
+            fprintf(trace, "#hook connect at %x\n", (UINT32)RTN_Address(connRtn));
+            RTN_Open(connRtn);
+            INS_InsertCall(RTN_InsHead(connRtn), IPOINT_BEFORE, (AFUNPTR)RecordConnectBefore,
+                           IARG_INST_PTR, IARG_CONTEXT,
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // name
+                           IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // namelen
+                           IARG_END);
+            RTN_Close(connRtn);
+        }
     }
 
-    fprintf(trace, "#loaded %s base=%x\n", imgName, (UINT32)IMG_StartAddress(img));
-
-    // Hook send()
-    RTN sendRtn = RTN_FindByName(img, "send");
-    if (RTN_Valid(sendRtn)) {
-        fprintf(trace, "#hook send at %x\n", (UINT32)RTN_Address(sendRtn));
-        RTN_Open(sendRtn);
-        // send(SOCKET s, const char* buf, int len, int flags)
-        // arg0=socket, arg1=buf, arg2=len
-        INS_InsertCall(RTN_InsHead(sendRtn), IPOINT_BEFORE, (AFUNPTR)RecordSendBefore,
-                       IARG_INST_PTR, IARG_CONTEXT,
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // buf
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // len
-                       IARG_END);
-        RTN_Close(sendRtn);
+    // Hook HPSocket4C.dll
+    if (imgLower.find("hpsocket") != std::string::npos) {
+        fprintf(trace, "#loaded HPSocket base=%x\n", (UINT32)IMG_StartAddress(img));
+        // Try common HPSocket send/recv functions
+        const char* sendFuncs[] = {
+            "HP_Client_Send", "HP_Client_SendPart", "HP_Client_SendPackets",
+            "HP_Agent_Send", "HP_Agent_SendPart", "HP_Agent_SendPackets",
+            "HP_Server_Send", "HP_Server_SendPart", "HP_Server_SendPackets",
+            NULL
+        };
+        const char* recvFuncs[] = {
+            "HP_Client_Receive", "HP_Agent_Receive", "HP_Server_Receive",
+            NULL
+        };
+        for (int i = 0; sendFuncs[i]; i++) {
+            TryHookFunc(img, sendFuncs[i], FALSE);
+        }
+        for (int i = 0; recvFuncs[i]; i++) {
+            TryHookFunc(img, recvFuncs[i], TRUE);
+        }
     }
 
-    // Hook recv() - need to capture AFTER it returns
-    RTN recvRtn = RTN_FindByName(img, "recv");
-    if (RTN_Valid(recvRtn)) {
-        fprintf(trace, "#hook recv at %x\n", (UINT32)RTN_Address(recvRtn));
-        RTN_Open(recvRtn);
-        // recv(SOCKET s, char* buf, int len, int flags)
-        // We need return value (bytes received) and buf address
-        INS_InsertCall(RTN_InsHead(recvRtn), IPOINT_AFTER, (AFUNPTR)RecordRecvAfter,
-                       IARG_INST_PTR, IARG_CONTEXT,
-                       IARG_FUNCRET_EXITPOINT_VALUE,     // return value
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 1,  // buf
-                       IARG_FUNCARG_ENTRYPOINT_VALUE, 2,  // len
-                       IARG_END);
-        RTN_Close(recvRtn);
+    // Hook any DLL that might do network I/O
+    // Also hook kernel32 WriteFile/ReadFile for pipe-based IPC
+    if (imgLower.find("kernel32") != std::string::npos) {
+        TryHookFunc(img, "WriteFile", FALSE);
+        TryHookFunc(img, "ReadFile", TRUE);
     }
 }
 
