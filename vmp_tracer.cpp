@@ -184,7 +184,7 @@ VOID Instruction(INS ins, VOID* v)
 
     // Track CALL instructions that jump to ws2_32 address range
     if (ws2Base > 0 && INS_IsCall(ins)) {
-        ADDRINT target = INS_DirectBranchOrCallTargetAddress(ins);
+        ADDRINT target = INS_DirectControlFlowTargetAddress(ins);
         if (target >= ws2Base && target < ws2End) {
             INS_InsertCall(ins, IPOINT_BEFORE, (AFUNPTR)RecordCallToWs2,
                            IARG_INST_PTR, IARG_BRANCH_TARGET_ADDR, IARG_CONTEXT, IARG_END);
