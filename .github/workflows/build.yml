@@ -20,9 +20,9 @@ jobs:
     - name: Download Pin
       shell: pwsh
       run: |
+        New-Item -ItemType Directory -Path "pin" -Force
         gh release download v1.0 --repo John-John1/vmp-pin-tracer --pattern pin-4.3.zip
-        Expand-Archive -Path pin-4.3.zip -DestinationPath .
-        Rename-Item "pin-external-4.3-99850-gce5652921-clang-windows" "pin"
+        Expand-Archive -Path pin-4.3.zip -DestinationPath "pin"
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     - name: Copy source
